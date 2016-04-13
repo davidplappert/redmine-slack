@@ -1,51 +1,15 @@
 require 'httpclient'
 
 class SlackListener < Redmine::Hook::Listener
-	def controller_issues_new_after_save(context={})
-		issue = context[:issue]
-
-		channel = channel_for_project issue.project
-		url = url_for_project issue.project
-
-		return unless channel and url
-		return if issue.is_private?
-
-		msg = "[#{escape issue.project}] #{escape issue.author} created <#{object_url issue}|#{escape issue}>#{mentions issue.description}"
-
-		attachment = {}
-		attachment[:text] = escape issue.description if issue.description
-		attachment[:fields] = [{
-			:title => I18n.t("field_status"),
-			:value => escape(issue.status.to_s),
-			:short => true
-		}, {
-			:title => I18n.t("field_priority"),
-			:value => escape(issue.priority.to_s),
-			:short => true
-		}, {
-			:title => I18n.t("field_assigned_to"),
-			:value => escape(issue.assigned_to.to_s),
-			:short => true
-		}]
-
-		attachment[:fields] << {
-			:title => I18n.t("field_watcher"),
-			:value => escape(issue.watcher_users.join(', ')),
-			:short => true
-		} if Setting.plugin_redmine_slack[:display_watchers] == 'yes'
-
-		speak msg, channel, attachment, url
-	end
-
-	def controller_issues_edit_after_save(context={})
+	def controller_issues_edit_before_save(context={})
 		issue = context[:issue]
 		journal = context[:journal]
 
 		channel = channel_for_project issue.project
 		url = url_for_project issue.project
 
-		return unless channel and url and Setting.plugin_redmine_slack[:post_updates] == '1'
 		return if issue.is_private?
+		return if issue.status_id != Setting.plugin_redmine_slack[:issue_status_to_alert]
 
 		msg = "[#{escape issue.project}] #{escape journal.user.to_s} updated <#{object_url issue}|#{escape issue}>#{mentions journal.notes}"
 
@@ -54,76 +18,6 @@ class SlackListener < Redmine::Hook::Listener
 		attachment[:fields] = journal.details.map { |d| detail_to_field d }
 
 		speak msg, channel, attachment, url
-	end
-
-	def model_changeset_scan_commit_for_issue_ids_pre_issue_update(context={})
-		issue = context[:issue]
-		journal = issue.current_journal
-		changeset = context[:changeset]
-
-		channel = channel_for_project issue.project
-		url = url_for_project issue.project
-
-		return unless channel and url and issue.save
-		return if issue.is_private?
-
-		msg = "[#{escape issue.project}] #{escape journal.user.to_s} updated <#{object_url issue}|#{escape issue}>"
-
-		repository = changeset.repository
-
-		if Setting.host_name.to_s =~ /\A(https?\:\/\/)?(.+?)(\:(\d+))?(\/.+)?\z/i
-			host, port, prefix = $2, $4, $5
-			revision_url = Rails.application.routes.url_for(
-				:controller => 'repositories',
-				:action => 'revision',
-				:id => repository.project,
-				:repository_id => repository.identifier_param,
-				:rev => changeset.revision,
-				:host => host,
-				:protocol => Setting.protocol,
-				:port => port,
-				:script_name => prefix
-			)
-		else
-			revision_url = Rails.application.routes.url_for(
-				:controller => 'repositories',
-				:action => 'revision',
-				:id => repository.project,
-				:repository_id => repository.identifier_param,
-				:rev => changeset.revision,
-				:host => Setting.host_name,
-				:protocol => Setting.protocol
-			)
-		end
-
-		attachment = {}
-		attachment[:text] = ll(Setting.default_language, :text_status_changed_by_changeset, "<#{revision_url}|#{escape changeset.comments}>")
-		attachment[:fields] = journal.details.map { |d| detail_to_field d }
-
-		speak msg, channel, attachment, url
-	end
-
-	def controller_wiki_edit_after_save(context = { })
-		return unless Setting.plugin_redmine_slack[:post_wiki_updates] == '1'
-
-		project = context[:project]
-		page = context[:page]
-
-		user = page.content.author
-		project_url = "<#{object_url project}|#{escape project}>"
-		page_url = "<#{object_url page}|#{page.title}>"
-		comment = "[#{project_url}] #{page_url} updated by *#{user}*"
-
-		channel = channel_for_project project
-		url = url_for_project project
-
-		attachment = nil
-		if not page.content.comments.empty?
-			attachment = {}
-			attachment[:text] = "#{escape page.content.comments}"
-		end
-
-		speak comment, channel, attachment, url
 	end
 
 	def speak(msg, channel, attachment=nil, url=nil)
